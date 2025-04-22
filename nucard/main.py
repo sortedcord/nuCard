@@ -6,7 +6,7 @@ from textual.containers import Vertical, Horizontal, VerticalScroll, Container, 
 from textual.screen import ModalScreen
 from pathlib import Path
 from textual.reactive import reactive
-from utils import is_audio_file
+from utils import is_audio_file, iterdir
 import mutagen
 
 
@@ -63,9 +63,6 @@ class File():
                 del self.properties[tag]
         
         self.convert_aac_tags()
-        
-    
-
 
 
 class Property_list(DataTable):
@@ -154,8 +151,12 @@ class FilePickerScreen(ModalScreen[str]):
     def on_button_pressed(self, event:Button.Pressed) -> None:
         if event.button.id == "submit":
             text_area:Input = self.query_one(Input)
+
+            if Path(text_area.value).is_dir():
+                paths = iterdir(text_area.value)
+                self.dismiss(filter(is_audio_file, paths))
             if is_audio_file(text_area.value):
-                self.dismiss(text_area.value)
+                self.dismiss([text_area.value])
         else:
             self.dismiss(False)
 
@@ -178,8 +179,9 @@ class MusicManagerApp(App):
         """
         Called when OPEN_FILES changes
         """
-        self.OPEN_FILES.append(file)
-        self.query_one(File_list).push_file(file)
+        if file not in self.OPEN_FILES:
+            self.OPEN_FILES.append(file)
+            self.query_one(File_list).push_file(file)
 
 
     def compose(self) -> ComposeResult:
@@ -213,9 +215,10 @@ class MusicManagerApp(App):
         """
         An Action to add files to MMA
         """
-        def get_path(path: str | None) -> None:
-            if path:
-                self.open_files(File(Path(path)))
+        def get_path(paths: list | None) -> None:
+            if paths:
+                for path in paths:
+                    self.open_files(File(Path(path)))
         self.push_screen(FilePickerScreen(), get_path) 
 
 
