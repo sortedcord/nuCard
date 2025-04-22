@@ -2,4 +2,4 @@
 A TUI remake of Musicbrainz Picard utility
 (Powered by Textual)
 
-![Screenshot](docs/assets/inital_ss.svg)
+![Screenshot](docs/assets/v0.01a.svg)
