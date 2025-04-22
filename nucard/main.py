@@ -2,11 +2,10 @@ import os
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Footer, Header, DataTable, Label, Button, Input, DirectoryTree, TextArea, Static
-from textual.containers import Vertical, Horizontal, VerticalScroll, Container, Grid
+from textual.containers import Horizontal, Grid
 from rich.text import Text
 from textual.screen import ModalScreen
 from pathlib import Path
-from textual.reactive import reactive
 from textual.coordinate import Coordinate
 from utils import is_audio_file, iterdir, match_property, parse_duration
 import base64
@@ -35,7 +34,7 @@ class FilePickerScreen(ModalScreen[str]):
         self.query_one(Input).value = str(tree.path)
 
     def tree_change(self):
-        tree:DirectoryTree = self.query_one(DirectoryTree)
+        tree = self.query_one(DirectoryTree)
         self.path_line_lookup = {
             str(tree.get_node_at_line(line).data.path): line
             for line in range(0, tree.last_line)
@@ -68,9 +67,10 @@ class FilePickerScreen(ModalScreen[str]):
                 self.dismiss(filter(is_audio_file, paths))
             if is_audio_file(text_area.value):
                 self.dismiss([text_area.value])
-            else: self.app.notify("Selected file is not an audio file.")
+            else: 
+                self.app.notify("Selected file is not an audio file.")
         else:
-            self.dismiss(False)
+            self.dismiss("")
 
 
 class File():
@@ -98,7 +98,7 @@ class File():
         if pic:
             image_stream = io.BytesIO(pic.data)
             image = Image.open(image_stream)
-            img_resized = image.resize((38, 27), resample=Image.LANCZOS)
+            img_resized = image.resize((38, 27))
             self.image = Pixels.from_image(img_resized)
             # Open image from raw image data in PIL
 
@@ -119,8 +119,7 @@ class File():
     def get_property(self, property:str) -> str:
         if property in self.properties.keys():
             return self.properties[property]
-        else:
-            return ["0"]
+        return "Not defined"
 
     def convert_aac_tags(self) -> None:
         """
@@ -143,7 +142,7 @@ class File():
                 '©too': 'encoder'
             }
 
-            new_properties = {}
+            new_properties:dict = {}
 
             for key, val in self.properties.items():
                 if key in convert_dict:
@@ -163,11 +162,11 @@ class File():
 class Property_Editor(TextArea):
     BINDINGS = [
             Binding("escape", "enter_value", "Submit", show=True),
-            Binding("Ctrl+u", "reset_value", "Reset Value", show=True),
-            Binding("Ctrl+r", "delete_value", "Delete", show=True)
+        Binding("Ctrl+u", "reset_value", "Reset Value", show=True),
+            Binding("Ctrl+r", "delete_value", "Delete", show=True),
         ]
     
-    def __init__(self, text, key):
+    def __init__(self, text:str, key:str):
         super().__init__(text=text)
         self.id = "property_editor"
         self.key = key
@@ -181,12 +180,22 @@ class Property_Editor(TextArea):
 
 
 class Property_list(DataTable):
+    BINDINGS = [
+        Binding("w", "save_file", "Save File"),
+        Binding("/", "search_property", "Search Property")
+    ]
     def __init__(self):
         super().__init__()
         self.cursor_type = "row"
         self.classes = "datatable"
         self.add_columns("Property", "Old Value", "New Value")
         self.current_property = None
+
+    def action_search_property(self):
+        try:
+            self.app.query_one("#property_search_input", Input).focus()
+        except:
+            raise
     
     def load_file(self, file:File) -> None:
         self.clear()
@@ -248,14 +257,15 @@ class MusicManagerApp(App):
     
     CSS_PATH = "styles/main.tcss"
 
-    OPEN_FILES = []
-    CURRENT_FILE = None
+    OPEN_FILES:list[File] = []
+    CURRENT_FILE:File|None = None
 
 
-    def get_file_from_path(self, path:str) -> File:
+    def get_file_from_path(self, path:str) -> File|None:
         for file in self.OPEN_FILES:
             if str(file.path) == path:
                 return file
+        return None
 
     def open_files(self, file:File) -> None:
         """
@@ -303,6 +313,8 @@ class MusicManagerApp(App):
         if event.input.id == "property_search_input":
             if self.CURRENT_FILE is None:
                 return
+            if event.input.value == "":
+                return
             selected_row = property_table.get_row_at(property_table.cursor_row)
             textarea = Property_Editor(text=selected_row[-1], key=property_table.current_property)
             self.query_one("#edit_bar").mount(textarea, after=self.query_one("#property_search_input"))
@@ -317,11 +329,10 @@ class MusicManagerApp(App):
     
     def on_data_table_row_highlighted(self, event:DataTable.RowHighlighted):
         if isinstance(event.data_table, Property_list):
-            event.data_table.current_property = event.row_key
+            event.data_table.current_property = event.row_key.value
             self.query_one("#property_label", Label).update(event.row_key.value)
 
-
-        file = self.get_file_from_path(event.row_key)
+        file = self.get_file_from_path(str(event.row_key.value))
         if file is None:
             return
         self.query_one(Property_list).load_file(file)
@@ -334,9 +345,27 @@ class MusicManagerApp(App):
             if paths:
                 for path in paths:
                     self.open_files(File(Path(path)))
-        self.push_screen(FilePickerScreen(), get_path) 
+        self.push_screen(FilePickerScreen(), get_path)
+    
+    def on_mount(self):
+        if args.path:
+            if os.path.isdir(args.path):
+                paths = iterdir(args.path)
+                audio_files = filter(is_audio_file, paths)
+                for path in audio_files:
+                    self.open_files(File(Path(path)))
+            elif is_audio_file(args.path):
+                self.open_files(File(args.path))
 
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser(description="Music Manager App")
+    parser.add_argument("path", type=str, help="Path to the music file or directory")
+    return parser.parse_args()
 
 if __name__ == "__main__":
+    # Parse command line arguments
+    args = parse_args()
+    
     app = MusicManagerApp()
     app.run()
