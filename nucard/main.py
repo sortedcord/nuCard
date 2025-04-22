@@ -1,22 +1,106 @@
 import os
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, DataTable, Label, Button, Input, DirectoryTree, TextArea 
+from textual.widgets import Footer, Header, DataTable, Label, Button, Input, DirectoryTree, TextArea, Static
 from textual.containers import Vertical, Horizontal, VerticalScroll, Container, Grid
+from rich.text import Text
 from textual.screen import ModalScreen
 from pathlib import Path
 from textual.reactive import reactive
+from textual.coordinate import Coordinate
 from utils import is_audio_file, iterdir, match_property, parse_duration
+import base64
 import mutagen
+import io
+from rich_pixels import Pixels
+from PIL import Image
+from mutagen.flac import Picture, FLACNoHeaderError
+
+
+class FilePickerScreen(ModalScreen[str]):
+    """Screen to choose file/dir"""
+    def compose(self) -> ComposeResult:
+        yield Grid(
+            Label("Locate the file or folder"),
+            DirectoryTree("/data/Music/Music"),
+            Input(),
+            Button("Enter", id="submit", variant="primary"),
+            Button("Cancel", id="cancel", variant="error"),
+            classes="dialog"
+        )
+
+    def on_mount(self) -> None:
+        tree = self.query_one(DirectoryTree)
+        tree.center_scroll = True
+        self.query_one(Input).value = str(tree.path)
+
+    def tree_change(self):
+        tree:DirectoryTree = self.query_one(DirectoryTree)
+        self.path_line_lookup = {
+            str(tree.get_node_at_line(line).data.path): line
+            for line in range(0, tree.last_line)
+        }
+    
+    def on_directory_tree_directory_selected(self, event:DirectoryTree.DirectorySelected) -> None:
+        self.tree_change()
+        path = event.path
+        self.query_one(Input).value = str(path)
+
+    def on_directory_tree_file_selected(self, event:DirectoryTree.FileSelected) -> None:
+        self.tree_change()
+        path = event.path
+        self.query_one(Input).value = str(path)
+    
+    def on_input_changed(self, event:Input.Changed) -> None:
+        self.tree_change()
+        if os.path.exists(event.value) and not event.value.endswith('/'):
+            line = self.path_line_lookup[event.value]
+            (tree := self.query_one(DirectoryTree)).cursor_line = line
+            tree.scroll_to_line(line)
+            tree.get_node_at_line(line).expand()
+
+    def on_button_pressed(self, event:Button.Pressed) -> None:
+        if event.button.id == "submit":
+            text_area:Input = self.query_one(Input)
+
+            if Path(text_area.value).is_dir():
+                paths = iterdir(text_area.value)
+                self.dismiss(filter(is_audio_file, paths))
+            if is_audio_file(text_area.value):
+                self.dismiss([text_area.value])
+            else: self.app.notify("Selected file is not an audio file.")
+        else:
+            self.dismiss(False)
 
 
 class File():
-    
     def __init__(self, path:Path) -> None:
         self.path:Path = path
         self.muta_ob = mutagen.File(path)
+        self.image = None
+        self.changed = False
+        self.properties = dict(self.muta_ob)        
 
-        self.properties:dict = dict(mutagen.File(path))
+        pic = None
+        raw_data = None
+        if hasattr(self.muta_ob, "pictures"):
+            pic = self.muta_ob.pictures[0]
+        elif "metadata_block_picture" in self.properties:
+            raw_data = self.properties["metadata_block_picture"][0]
+
+        if raw_data:
+            image_bytes = base64.b64decode(raw_data.encode('utf-8'))
+            try:
+                pic = Picture(image_bytes)
+            except FLACNoHeaderError:
+                raise
+        
+        if pic:
+            image_stream = io.BytesIO(pic.data)
+            image = Image.open(image_stream)
+            img_resized = image.resize((38, 27), resample=Image.LANCZOS)
+            self.image = Pixels.from_image(img_resized)
+            # Open image from raw image data in PIL
 
         delete_tags = [
             "metadata_block_picture",
@@ -74,7 +158,26 @@ class File():
                 else:
                     new_properties[key] = val
             self.properties = new_properties
+
+
+class Property_Editor(TextArea):
+    BINDINGS = [
+            Binding("escape", "enter_value", "Submit", show=True),
+            Binding("Ctrl+u", "reset_value", "Reset Value", show=True),
+            Binding("Ctrl+r", "delete_value", "Delete", show=True)
+        ]
     
+    def __init__(self, text, key):
+        super().__init__(text=text)
+        self.id = "property_editor"
+        self.key = key
+
+    def action_enter_value(self):
+        _input = Input(placeholder="Search Property", id="property_search_input")
+        self.app.query_one("#edit_bar").mount(_input)
+        self.app.query_one(Property_list).update(self.key, self.text)
+        self.app.query_one("#property_search_input", Input).focus()
+        self.remove()
 
 
 class Property_list(DataTable):
@@ -83,6 +186,7 @@ class Property_list(DataTable):
         self.cursor_type = "row"
         self.classes = "datatable"
         self.add_columns("Property", "Old Value", "New Value")
+        self.current_property = None
     
     def load_file(self, file:File) -> None:
         self.clear()
@@ -93,25 +197,39 @@ class Property_list(DataTable):
                 val = "\n".join(val)
             self.add_row(key, val, val, height=None, key=key)
         self.app.CURRENT_FILE = file
+        if file.image:
+            self.app.query_one("#cover_image", Static).update(file.image)
+    
+    def update(self, key, value):
+        row_index = self.get_row_index(key)
+        self.update_cell_at(Coordinate(row=row_index, column=2), value=value, update_width=True)
+        if value != self.app.CURRENT_FILE.get_property(key):
+            self.set_row_as_changed(row_index)
+    
+    def set_row_as_changed(self, row_index:int):
+        row_vals = self.get_row_at(row_index)
+        for i in range(0,3):
+            self.update_cell_at(Coordinate(row=row_index, column=i), 
+                                value=Text(row_vals[i], style="italic #e3dc0e"))
+
+
+
 
 class File_list(DataTable):
 
     BINDINGS = [
     Binding("enter", "select_cursor", "Select", show=False),
     Binding("k", "cursor_up", "Cursor up", show=False),
-    Binding(
-        "j", "cursor_down", "Cursor down", show=False
-    ),
-    Binding("gg", "scroll_home", "Home", show=False),
+    Binding("j", "cursor_down", "Cursor down", show=False),
+    # Binding("gg", "scroll_home", "Home", show=False),
     # Binding("end", "scroll_end", "End", show=False),
 ]
-
 
     def __init__(self):
         super().__init__()
         self.cursor_type = "row"
         self.classes = "datatable"
-        self.add_columns(*("Track no.", "Title", "Artist", "Album", "Duration"))
+        self.add_columns(*("Track", "Title", "Artist", "Album", "Duration"))
     
     def push_file(self, file:File):
         self.add_row(file.get_property('tracknumber')[0],
@@ -120,60 +238,6 @@ class File_list(DataTable):
                      file.get_property('album')[0],
                      file.duration, key=str(file.path))
 
-class FilePickerScreen(ModalScreen[str]):
-    """Screen to choose file/dir"""
-    def compose(self) -> ComposeResult:
-        yield Grid(
-            Label("Locate the file or folder"),
-            DirectoryTree("/data/Music/Music"),
-            Input(),
-            Button("Enter", id="submit", variant="primary"),
-            Button("Cancel", id="cancel", variant="error"),
-            classes="dialog"
-        )
-
-    def on_mount(self) -> None:
-        tree = self.query_one(DirectoryTree)
-        tree.center_scroll = True
-        self.query_one(Input).value = str(tree.path)
-
-    def tree_change(self):
-        tree:DirectoryTree = self.query_one(DirectoryTree)
-        self.path_line_lookup = {
-            str(tree.get_node_at_line(line).data.path): line
-            for line in range(0, tree.last_line)
-        }
-    
-    def on_directory_tree_directory_selected(self, event:DirectoryTree.DirectorySelected) -> None:
-        self.tree_change()
-        path = event.path
-        self.query_one(Input).value = str(path)
-
-    def on_directory_tree_file_selected(self, event:DirectoryTree.FileSelected) -> None:
-        self.tree_change()
-        path = event.path
-        self.query_one(Input).value = str(path)
-    
-    def on_input_changed(self, event:Input.Changed) -> None:
-        self.tree_change()
-        if os.path.exists(event.value) and not event.value.endswith('/'):
-            line = self.path_line_lookup[event.value]
-            (tree := self.query_one(DirectoryTree)).cursor_line = line
-            tree.scroll_to_line(line)
-            tree.get_node_at_line(line).expand()
-
-    def on_button_pressed(self, event:Button.Pressed) -> None:
-        if event.button.id == "submit":
-            text_area:Input = self.query_one(Input)
-
-            if Path(text_area.value).is_dir():
-                paths = iterdir(text_area.value)
-                self.dismiss(filter(is_audio_file, paths))
-            if is_audio_file(text_area.value):
-                self.dismiss([text_area.value])
-            else: self.app.notify("Selected file is not an audio file.")
-        else:
-            self.dismiss(False)
 
 class MusicManagerApp(App):
     """A Textual app to manage stopwatches."""
@@ -187,12 +251,6 @@ class MusicManagerApp(App):
     OPEN_FILES = []
     CURRENT_FILE = None
 
-    def action_escape_focus(self):
-        if self.focused.id == "property_value_textarea":
-            _input = Input(placeholder="Search Property", id="property_search_input")
-            self.query_one("#edit_bar").mount(_input)
-            self.query_one(TextArea).remove()
-            self.query_one("#property_label", Label).update("Property Name")
 
     def get_file_from_path(self, path:str) -> File:
         for file in self.OPEN_FILES:
@@ -212,7 +270,10 @@ class MusicManagerApp(App):
         """Create child widgets for the app."""
         yield Grid(
             Header(),
-            File_list(),
+            Horizontal(
+                File_list(),
+                Static(id="cover_image"),
+            ),
             Horizontal(
                 Label("Property Name", id="property_label"),
                 Input(placeholder="Search Property", id="property_search_input"),
@@ -228,6 +289,8 @@ class MusicManagerApp(App):
         property_table = self.query_one(Property_list)
         if event.input.id == "property_search_input":
             prop =  event.input.value
+            if self.CURRENT_FILE is None:
+                return
             properties = self.CURRENT_FILE.properties.keys()
             key = match_property(prop, properties)
 
@@ -238,11 +301,13 @@ class MusicManagerApp(App):
     def on_input_submitted(self, event:Input.Submitted):
         property_table = self.query_one(Property_list)
         if event.input.id == "property_search_input":
+            if self.CURRENT_FILE is None:
+                return
             selected_row = property_table.get_row_at(property_table.cursor_row)
-            textarea = TextArea(id="property_value_textarea", text=selected_row[-1])
+            textarea = Property_Editor(text=selected_row[-1], key=property_table.current_property)
             self.query_one("#edit_bar").mount(textarea, after=self.query_one("#property_search_input"))
             event.input.remove()
-            self.query_one("#property_label", Label).update(selected_row[0])
+    
 
     def action_toggle_dark(self) -> None:
         """An action to toggle dark mode."""
@@ -252,9 +317,13 @@ class MusicManagerApp(App):
     
     def on_data_table_row_highlighted(self, event:DataTable.RowHighlighted):
         if isinstance(event.data_table, Property_list):
-            return
+            event.data_table.current_property = event.row_key
+            self.query_one("#property_label", Label).update(event.row_key.value)
+
 
         file = self.get_file_from_path(event.row_key)
+        if file is None:
+            return
         self.query_one(Property_list).load_file(file)
 
     def action_add_files(self) -> None:
