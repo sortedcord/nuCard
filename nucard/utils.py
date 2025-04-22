@@ -43,3 +43,20 @@ def match_property(key, properties):
     if _:
         return _[0]
 
+def parse_duration(duration:str) -> str:
+    # convert 'xxx.xx seconds' to 'mm:ss'
+    """Convert a duration string to a formatted string.
+    Args:
+        duration (str): Duration string in the format 'xxx.xx seconds'.
+    Returns:
+        str: Formatted duration string in the format 'mm:ss'.
+    """
+    try:
+        seconds = float(duration.split()[0])
+        minutes = int(seconds // 60)
+        seconds = int(seconds % 60)
+        return f"{minutes:02}:{seconds:02}"
+    except ValueError:
+        return duration
+    except IndexError:
+        return duration

@@ -69,3 +69,7 @@ FilePickerScreen {
 TextArea {
     height: 3;
 }
+
+Property_list {
+    max-width: 100%;
+}

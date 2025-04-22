@@ -6,7 +6,7 @@ from textual.containers import Vertical, Horizontal, VerticalScroll, Container, 
 from textual.screen import ModalScreen
 from pathlib import Path
 from textual.reactive import reactive
-from utils import is_audio_file, iterdir, match_property
+from utils import is_audio_file, iterdir, match_property, parse_duration
 import mutagen
 
 
@@ -14,8 +14,9 @@ class File():
     
     def __init__(self, path:Path) -> None:
         self.path:Path = path
+        self.muta_ob = mutagen.File(path)
 
-        self.properties:dict = mutagen.File(path)
+        self.properties:dict = dict(mutagen.File(path))
 
         delete_tags = [
             "metadata_block_picture",
@@ -25,6 +26,9 @@ class File():
         for tag in delete_tags:
             if tag in self.properties:
                 del self.properties[tag]
+        
+        # Get duration using mutagen
+        self.duration:str = parse_duration(self.muta_ob.info.pprint().split(",")[1])
         
         self.convert_aac_tags()
 
@@ -71,21 +75,6 @@ class File():
                     new_properties[key] = val
             self.properties = new_properties
     
-    def __init__(self, path:Path) -> None:
-        self.path:Path = path
-
-        self.properties:dict = mutagen.File(path)
-
-        delete_tags = [
-            "metadata_block_picture",
-            "covr"
-        ]
-
-        for tag in delete_tags:
-            if tag in self.properties:
-                del self.properties[tag]
-        
-        self.convert_aac_tags()
 
 
 class Property_list(DataTable):
@@ -129,7 +118,7 @@ class File_list(DataTable):
                      file.get_property('title')[0],
                      ",".join(file.get_property('artist')),
                      file.get_property('album')[0],
-                     "0", key=str(file.path))
+                     file.duration, key=str(file.path))
 
 class FilePickerScreen(ModalScreen[str]):
     """Screen to choose file/dir"""
@@ -191,7 +180,7 @@ class MusicManagerApp(App):
 
     BINDINGS = [("d", "toggle_dark", "Toggle dark mode"),
                 ("o", "add_files", "Add Files"),
-                ("escape", "escape_focus", "Escape Focus")]
+                Binding("escape", "escape_focus", "Escape Focus", show=False)]
     
     CSS_PATH = "styles/main.tcss"
 
