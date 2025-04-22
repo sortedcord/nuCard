@@ -32,3 +32,14 @@ def iterdir(path) -> list:
         elif os.path.isfile(full_path):
             file_paths.append(full_path)
     return file_paths
+
+def match_property(key, properties):
+    _ = []
+    for prop in properties:
+        if key == prop:
+            return prop
+        elif key in prop:
+            _.append(prop)
+    if _:
+        return _[0]
+

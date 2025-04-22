@@ -1,16 +1,39 @@
 import os
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.widgets import Footer, Header, DataTable, Label, Button, Input, DirectoryTree
+from textual.widgets import Footer, Header, DataTable, Label, Button, Input, DirectoryTree, TextArea 
 from textual.containers import Vertical, Horizontal, VerticalScroll, Container, Grid
 from textual.screen import ModalScreen
 from pathlib import Path
 from textual.reactive import reactive
-from utils import is_audio_file, iterdir
+from utils import is_audio_file, iterdir, match_property
 import mutagen
 
 
 class File():
+    
+    def __init__(self, path:Path) -> None:
+        self.path:Path = path
+
+        self.properties:dict = mutagen.File(path)
+
+        delete_tags = [
+            "metadata_block_picture",
+            "covr"
+        ]
+
+        for tag in delete_tags:
+            if tag in self.properties:
+                del self.properties[tag]
+        
+        self.convert_aac_tags()
+
+    def get_property(self, property:str) -> str:
+        if property in self.properties.keys():
+            return self.properties[property]
+        else:
+            return ["0"]
+
     def convert_aac_tags(self) -> None:
         """
         Convert AAC tags to standard tags.
@@ -78,8 +101,9 @@ class Property_list(DataTable):
             if len(val) == 1:
                 val = val[0]
             else:
-                val = ";".join(val)
-            self.add_row(key, val, val)
+                val = "\n".join(val)
+            self.add_row(key, val, val, height=None, key=key)
+        self.app.CURRENT_FILE = file
 
 class File_list(DataTable):
 
@@ -101,21 +125,22 @@ class File_list(DataTable):
         self.add_columns(*("Track no.", "Title", "Artist", "Album", "Duration"))
     
     def push_file(self, file:File):
-        self.add_row(file.properties['tracknumber'][0],
-                     file.properties['title'][0],
-                     ",".join(file.properties['artist']),
-                     file.properties['album'][0],
+        self.add_row(file.get_property('tracknumber')[0],
+                     file.get_property('title')[0],
+                     ",".join(file.get_property('artist')),
+                     file.get_property('album')[0],
                      "0", key=str(file.path))
 
 class FilePickerScreen(ModalScreen[str]):
     """Screen to choose file/dir"""
     def compose(self) -> ComposeResult:
-        yield Vertical(
+        yield Grid(
             Label("Locate the file or folder"),
             DirectoryTree("/data/Music/Music"),
             Input(),
-            Grid(Button("Enter", id="submit"),
-            Button("Cancel", id="cancel"))
+            Button("Enter", id="submit", variant="primary"),
+            Button("Cancel", id="cancel", variant="error"),
+            classes="dialog"
         )
 
     def on_mount(self) -> None:
@@ -157,6 +182,7 @@ class FilePickerScreen(ModalScreen[str]):
                 self.dismiss(filter(is_audio_file, paths))
             if is_audio_file(text_area.value):
                 self.dismiss([text_area.value])
+            else: self.app.notify("Selected file is not an audio file.")
         else:
             self.dismiss(False)
 
@@ -164,11 +190,20 @@ class MusicManagerApp(App):
     """A Textual app to manage stopwatches."""
 
     BINDINGS = [("d", "toggle_dark", "Toggle dark mode"),
-                ("o", "add_files", "Add Files")]
+                ("o", "add_files", "Add Files"),
+                ("escape", "escape_focus", "Escape Focus")]
     
     CSS_PATH = "styles/main.tcss"
 
     OPEN_FILES = []
+    CURRENT_FILE = None
+
+    def action_escape_focus(self):
+        if self.focused.id == "property_value_textarea":
+            _input = Input(placeholder="Search Property", id="property_search_input")
+            self.query_one("#edit_bar").mount(_input)
+            self.query_one(TextArea).remove()
+            self.query_one("#property_label", Label).update("Property Name")
 
     def get_file_from_path(self, path:str) -> File:
         for file in self.OPEN_FILES:
@@ -186,17 +221,39 @@ class MusicManagerApp(App):
 
     def compose(self) -> ComposeResult:
         """Create child widgets for the app."""
-        yield Header()
+        yield Grid(
+            Header(),
+            File_list(),
+            Horizontal(
+                Label("Property Name", id="property_label"),
+                Input(placeholder="Search Property", id="property_search_input"),
+                id="edit_bar"                 
+            ),
+            Property_list(),
+            Footer(),
 
-        yield    File_list()
-        yield    Horizontal(
-                Label("Property Name"),
-                Input(placeholder="Property Value set"),
-                id="edit_bar"
-            )
-        yield    Property_list()        
-        
-        yield Footer()
+            id="appgrid"
+        )
+    
+    def on_input_changed(self, event:Input.Changed):
+        property_table = self.query_one(Property_list)
+        if event.input.id == "property_search_input":
+            prop =  event.input.value
+            properties = self.CURRENT_FILE.properties.keys()
+            key = match_property(prop, properties)
+
+            if key:
+                row = property_table.get_row_index(key)
+                property_table.move_cursor(row=row)
+
+    def on_input_submitted(self, event:Input.Submitted):
+        property_table = self.query_one(Property_list)
+        if event.input.id == "property_search_input":
+            selected_row = property_table.get_row_at(property_table.cursor_row)
+            textarea = TextArea(id="property_value_textarea", text=selected_row[-1])
+            self.query_one("#edit_bar").mount(textarea, after=self.query_one("#property_search_input"))
+            event.input.remove()
+            self.query_one("#property_label", Label).update(selected_row[0])
 
     def action_toggle_dark(self) -> None:
         """An action to toggle dark mode."""
@@ -205,7 +262,7 @@ class MusicManagerApp(App):
         )
     
     def on_data_table_row_highlighted(self, event:DataTable.RowHighlighted):
-        if event.data_table.id != "file_list":
+        if isinstance(event.data_table, Property_list):
             return
 
         file = self.get_file_from_path(event.row_key)
