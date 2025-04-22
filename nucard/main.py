@@ -1,5 +1,6 @@
 import os
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.widgets import Footer, Header, DataTable, Label, Button, Input, DirectoryTree
 from textual.containers import Vertical, Horizontal, VerticalScroll, Container, Grid
 from textual.screen import ModalScreen
@@ -8,20 +9,70 @@ from textual.reactive import reactive
 from utils import is_audio_file
 import mutagen
 
+
 class File():
+    def convert_aac_tags(self) -> None:
+        """
+        Convert AAC tags to standard tags.
+        """
+        if str(self.path).endswith(".m4a") or str(self.path).endswith(".aac"):
+            convert_dict = {
+                '----:com.apple.iTunes:REPLAYGAIN_ALBUM_GAIN': 'REPLAYGAIN_ALBUM_GAIN',
+                '----:com.apple.iTunes:REPLAYGAIN_ALBUM_PEAK': 'REPLAYGAIN_ALBUM_PEAK',
+                '----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN': 'REPLAYGAIN_TRACK_GAIN',
+                '----:com.apple.iTunes:REPLAYGAIN_TRACK_PEAK': 'REPLAYGAIN_TRACK_PEAK',
+                'aART': 'albumartist',
+                'disk': 'discnumber',
+                'trkn': 'tracknumber',
+                '©ART': 'artist',
+                '©alb': 'album',
+                '©cmt': 'comment',
+                '©day': 'date',
+                '©nam': 'title',
+                '©too': 'encoder'
+            }
+
+            new_properties = {}
+
+            for key, val in self.properties.items():
+                if key in convert_dict:
+                    new_key = convert_dict[key]
+                    if new_key not in new_properties:
+                        new_properties[new_key] = []
+                    if isinstance(val, list):
+                        for v in val:
+                            new_properties[new_key].append(v)
+                    else:
+                        new_properties[new_key].append(val)
+                else:
+                    new_properties[key] = val
+            self.properties = new_properties
+    
     def __init__(self, path:Path) -> None:
         self.path:Path = path
 
         self.properties:dict = mutagen.File(path)
-        if 'metadata_block_picture' in self.properties:
-            del self.properties['metadata_block_picture']
+
+        delete_tags = [
+            "metadata_block_picture",
+            "covr"
+        ]
+
+        for tag in delete_tags:
+            if tag in self.properties:
+                del self.properties[tag]
+        
+        self.convert_aac_tags()
+        
+    
+
 
 
 class Property_list(DataTable):
     def __init__(self):
         super().__init__()
         self.cursor_type = "row"
-        self.id = "property_list"
+        self.classes = "datatable"
         self.add_columns("Property", "Old Value", "New Value")
     
     def load_file(self, file:File) -> None:
@@ -29,13 +80,27 @@ class Property_list(DataTable):
         for key, val in file.properties.items():
             if len(val) == 1:
                 val = val[0]
+            else:
+                val = ";".join(val)
             self.add_row(key, val, val)
 
 class File_list(DataTable):
+
+    BINDINGS = [
+    Binding("enter", "select_cursor", "Select", show=False),
+    Binding("k", "cursor_up", "Cursor up", show=False),
+    Binding(
+        "j", "cursor_down", "Cursor down", show=False
+    ),
+    Binding("gg", "scroll_home", "Home", show=False),
+    # Binding("end", "scroll_end", "End", show=False),
+]
+
+
     def __init__(self):
         super().__init__()
         self.cursor_type = "row"
-        self.id = "file_list"
+        self.classes = "datatable"
         self.add_columns(*("Track no.", "Title", "Artist", "Album", "Duration"))
     
     def push_file(self, file:File):
@@ -137,7 +202,7 @@ class MusicManagerApp(App):
             "textual-dark" if self.theme == "textual-light" else "textual-light"
         )
     
-    def on_data_table_row_selected(self, event:DataTable.RowSelected):
+    def on_data_table_row_highlighted(self, event:DataTable.RowHighlighted):
         if event.data_table.id != "file_list":
             return
 
